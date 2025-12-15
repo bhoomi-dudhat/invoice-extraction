@@ -1334,6 +1334,160 @@ def download_file(file: str):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file, filename=os.path.basename(file))
 
+# ------------------------------------------------
+# -------Add new endpoint for image url-----------
+# ------------------------------------------------
+
+
+from fastapi import Form, File, UploadFile, HTTPException
+import requests
+import tempfile
+
+@app.post("/process-menu-url", response_model=ProcessingResponse, dependencies=[Depends(verify_token)])
+async def process_menu(
+    file: UploadFile = File(None),
+    image_url: str = Form(None),
+    token: str = Header(None, alias="Authorization")
+):
+
+    verify_token(token)
+
+    # ------------------------------
+    # CASE 1: FILE UPLOADED
+    # ------------------------------
+    if file:
+        ext = Path(file.filename).suffix.lower()
+        if ext not in [".jpg", ".jpeg", ".png"]:
+            raise HTTPException(400, "Only JPG/PNG allowed")
+
+        IMAGE_FILE = f"temp_{file.filename}"
+        with open(IMAGE_FILE, "wb") as f:
+            f.write(await file.read())
+
+    # ------------------------------
+    # CASE 2: BASE64 IMAGE URL
+    # ------------------------------
+    elif image_url and image_url.startswith("data:image"):
+        try:
+            header, encoded = image_url.split(",", 1)
+
+            # Clean base64
+            encoded = encoded.strip().replace("\n", "").replace("\r", "").replace(" ", "")
+            image_bytes = base64.b64decode(encoded)
+
+            # 🔴 CRITICAL: validate + normalize image
+            from PIL import Image, ImageOps
+            import io
+
+            img = Image.open(io.BytesIO(image_bytes))
+
+            # Fix EXIF rotation (VERY IMPORTANT)
+            img = ImageOps.exif_transpose(img)
+
+            # Remove alpha channel (PNG → RGB)
+            if img.mode in ("RGBA", "LA"):
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            else:
+                img = img.convert("RGB")
+
+            # Improve OCR reliability
+            MAX_SIZE = 1800
+            if max(img.size) > MAX_SIZE:
+                img.thumbnail((MAX_SIZE, MAX_SIZE))
+
+            # Save as clean JPEG
+            fd, IMAGE_FILE = tempfile.mkstemp(suffix=".jpg")
+            with os.fdopen(fd, "wb") as f:
+                img.save(f, format="JPEG", quality=95, subsampling=0)
+
+        except Exception as e:
+            raise HTTPException(400, f"Failed to process base64 image: {e}")
+
+
+
+    # ------------------------------
+    # CASE 2: URL PROVIDED
+    # ------------------------------
+    elif image_url:
+        if not (image_url.startswith("http://") or image_url.startswith("https://")):
+            raise HTTPException(400, "Invalid image_url")
+
+        resp = requests.get(image_url)
+        if resp.status_code != 200:
+            raise HTTPException(400, "Cannot download image_url")
+
+        fd, IMAGE_FILE = tempfile.mkstemp(suffix=".jpg")
+        with open(IMAGE_FILE, "wb") as f:
+            f.write(resp.content)
+
+    else:
+        raise HTTPException(400, "Provide either a file or image_url")
+
+    # ------------------------------
+    # RUN YOUR EXISTING PIPELINE
+    # ------------------------------
+    try:
+        text_output = call_bedrock_model(EXTRACTION_PROMPT, image_path=IMAGE_FILE)
+        parsed = extract_json_from_text(text_output)
+        items = parsed.get("items", [])
+
+        for it in items:
+            it.setdefault("prices", [])
+            it.setdefault("price_headers", [])
+            it.setdefault("modifiers", [])
+
+        product_rows = build_product_rows(items)
+        modifier_rows = build_modifier_rows(items)
+
+        prod_cols = list(pd.read_excel(REFERENCE_TEMPLATE, sheet_name="Product").columns)
+        mod_cols = list(pd.read_excel(REFERENCE_TEMPLATE, sheet_name="ModifierGroups_NewMenu").columns)
+
+        df_prod = pd.DataFrame(product_rows)
+        df_mod = pd.DataFrame(modifier_rows)
+
+        for c in prod_cols:
+            if c not in df_prod.columns:
+                df_prod[c] = ""
+
+        for c in mod_cols:
+            if c not in df_mod.columns:
+                df_mod[c] = ""
+
+        df_prod = df_prod[prod_cols]
+        df_mod = df_mod[mod_cols]
+
+        out_path = get_next_output_filename()
+
+        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+            df_prod.to_excel(writer, sheet_name="Product", index=False)
+            df_mod.to_excel(writer, sheet_name="ModifierGroups_NewMenu", index=False)
+
+    finally:
+        if os.path.exists(IMAGE_FILE):
+            try:
+                # force release file lock (Windows)
+                import gc
+                gc.collect()
+                
+                os.remove(IMAGE_FILE)
+            except PermissionError:
+                # retry after small delay
+                import time
+                time.sleep(0.2)
+                try:
+                    os.remove(IMAGE_FILE)
+                except:
+                    print("WARNING: Could not delete temp file:", IMAGE_FILE)
+
+
+    return {
+        "success": True,
+        "message": "Menu processed successfully",
+        "output_file": out_path
+    }
+
 
 # ------------------- Run -------------------
 if __name__ == "__main__":
