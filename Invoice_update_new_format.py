@@ -745,12 +745,14 @@ CRITICAL RULES:
 """
 
 # ------------------- UTILITIES -------------------
-def safe_int(x):
-    if x is None: return None
-    if isinstance(x, (int, float)): return int(x)
-    s = re.sub(r"[^\d]", "", str(x))
-    return int(s) if s else None
-
+def safe_float(x):
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except:
+        s = re.sub(r"[^\d.]", "", str(x))
+        return float(s) if s else None
 def remove_brackets(text: str) -> str:
     return re.sub(r"\(.*?\)", "", text).strip()
 
@@ -859,7 +861,7 @@ def build_product_rows(items: List[dict]) -> List[dict]:
         category = it.get("category", "")
         headers = it.get("price_headers", []) or []
         prices = it.get("prices", []) or []
-        numeric_prices = [safe_int(p) for p in prices]
+        numeric_prices = [safe_float(p) for p in prices]
 
         is_half_full = detect_half_full(headers)
         if is_half_full:
@@ -915,7 +917,7 @@ def build_modifier_rows(items: List[dict]) -> List[dict]:
         category = it.get("category", "")
         headers = it.get("price_headers", []) or []
         prices = it.get("prices", []) or []
-        numeric_prices = [safe_int(p) if p else 0 for p in prices]
+        numeric_prices = [safe_float(p) if p else 0 for p in prices]
 
         # ---------------------- CASE 1: HALF / FULL ----------------------
         if detect_half_full(headers):
