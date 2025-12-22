@@ -1272,7 +1272,7 @@ async def process_menu(file: UploadFile = File(...),
     """Process a menu image and return Excel output."""
     # Validate file
     ext = Path(file.filename).suffix.lower()
-    if ext not in [".jpg", ".jpeg", ".png"]:
+    if ext not in [".jpg", ".jpeg", ".png", ".webp", ".htm"]:
         raise HTTPException(status_code=400, detail="Only JPG/PNG images allowed")
 
     # Save temp file
@@ -1359,7 +1359,7 @@ async def process_menu(
     # ------------------------------
     if file:
         ext = Path(file.filename).suffix.lower()
-        if ext not in [".jpg", ".jpeg", ".png"]:
+        if ext not in [".jpg", ".jpeg", ".png", ".webp", ".htm"]:
             raise HTTPException(400, "Only JPG/PNG allowed")
 
         IMAGE_FILE = f"temp_{file.filename}"
